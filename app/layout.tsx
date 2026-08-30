@@ -1,0 +1,2 @@
+export const metadata={title:"Luoga's Automation",description:"TikTok comments to AI replies"};
+export default function Layout({children}:{children:React.ReactNode}){return <html lang="en"><body>{children}</body></html>}
