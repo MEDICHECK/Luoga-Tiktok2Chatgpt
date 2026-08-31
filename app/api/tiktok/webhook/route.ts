@@ -5,7 +5,6 @@ import { extractComment, getReplies, replyToComment } from '@/lib/tiktok';
 
 export const runtime = 'nodejs';
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const TRIGGER = '@askai';
 const MAX_REPLY_LENGTH = 500;
 const inFlight = new Set<string>();
@@ -36,8 +35,14 @@ function verifyTikTokSignature(rawBody: string, header: string | null) {
   return crypto.timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(received, 'hex'));
 }
 
+function getOpenAIClient() {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error('Missing OPENAI_API_KEY');
+  return new OpenAI({ apiKey });
+}
+
 async function generateReply(prompt: string) {
-  if (!process.env.OPENAI_API_KEY) throw new Error('Missing OPENAI_API_KEY');
+  const openai = getOpenAIClient();
 
   const response = await openai.responses.create({
     model: process.env.OPENAI_MODEL || 'gpt-5-mini',
@@ -58,7 +63,6 @@ async function processComment(commentId: string, videoId: string, text: string) 
       throw new Error('Missing TikTok credentials');
     }
 
-    // TikTok delivers webhooks at least once. Check the current thread before posting.
     const existingReplies = await getReplies(videoId, commentId);
     if (existingReplies.length > 0) return;
 
@@ -79,19 +83,20 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'invalid webhook signature' }, { status: 401 });
   }
 
-  let body: any;
+  let body: unknown;
   try {
     body = JSON.parse(rawBody);
   } catch {
     return NextResponse.json({ error: 'invalid JSON' }, { status: 400 });
   }
 
-  const event = String(body.event ?? body.event_type ?? '').toLowerCase();
+  const payload = body as Record<string, unknown>;
+  const event = String(payload.event ?? payload.event_type ?? '').toLowerCase();
   if (event && !event.includes('comment')) {
     return NextResponse.json({ ok: true, ignored: true, reason: 'not a comment event' });
   }
 
-  const comment = extractComment(body);
+  const comment = extractComment(payload);
   if (!comment?.comment_id || !comment.video_id || !comment.text) {
     return NextResponse.json({ ok: true, ignored: true, reason: 'comment payload not recognized' });
   }
@@ -100,8 +105,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, ignored: true, reason: 'no @askAI trigger' });
   }
 
-  // Acknowledge TikTok immediately. TikTok retries deliveries when a 200 is not returned.
-  // Work continues after the response so AI/API latency does not cause webhook retries.
   if (process.env.AUTO_REPLY === 'true') {
     after(() =>
       processComment(comment.comment_id!, comment.video_id!, comment.text!).catch((error) => {
